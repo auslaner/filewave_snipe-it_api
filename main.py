@@ -1,5 +1,9 @@
+import os
+import time
+
 from auth import get_filewave_api_key, get_snipe_it_api_key
 from filewave import FilewaveConnection, id_from_query_name
+from parser import SpreadsheetParser
 from snipe_it import SnipeITConnection, id_from_value
 
 
@@ -28,14 +32,40 @@ def transfer_filewave_to_snipe(filewave_connection, snipe_connection):
 
 
 def main():
-    # Create API connection objects for Filewave & Snipe IT
-    fw_api_key = get_filewave_api_key()
-    filewave_server = "https://filewave.redbutte.utah.edu"
-    fw_conn = FilewaveConnection(fw_api_key, filewave_server)
-
     snipe_api_key = get_snipe_it_api_key()
     snipe_it_server = "https://snipeit.intranet.redbutte.utah.edu"
     snipe_conn = SnipeITConnection(snipe_api_key, snipe_it_server)
+
+    # Create an object to help us manage the parsing of an exel document
+    excel_parser = SpreadsheetParser(os.environ.get("SPREADSHEET_FILE_LOCATION"))
+    ws = excel_parser.workbook.active  # Get the active worksheet
+    # Asset numbers are in Column C starting at row 4
+    for row in ws.iter_rows(min_row=4, min_col=2, max_col=8, max_row=209):
+        asset_num = row[1].value
+        purchase_date = row[6].value
+
+        # If asset number isn't a valid number or purchase_date is None, skip ahead
+        if asset_num is None or not asset_num.isdigit() or purchase_date is None:
+            continue
+
+        print(f"[*] Searching for asset {row[0].value} using search term {asset_num}.")
+
+        # Now we need to match the asset number to a hardware ID in Snipe IT
+        hardware = snipe_conn.get_hardware_assets(search=asset_num).json()
+        # Confirm that we didn't get more than one hardware asset
+        assert hardware['total'] <= 1
+
+        # If we didn't get any hardware assets, skip to next row
+        if hardware['total'] == 0:
+            print("No matching asset in Snipe IT. Skipping...")
+            continue
+        else:
+            print(f"[*] Updating hardware asset {hardware['rows'][0]['name']} with purchase date: {purchase_date}")
+            update_resp = snipe_conn.update_hardware_asset(hardware['rows'][0]['id'], purchase_date=purchase_date)
+            print(update_resp.text)
+
+            # Wait between requests so we don't hit the throttle limit
+            time.sleep(2)
 
 
 if __name__ == "__main__":
